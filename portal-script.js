@@ -1,42 +1,43 @@
 class GamePortal {
     constructor() {
         this.games = [];
+        this.customGames = JSON.parse(localStorage.getItem('customGames')) || [];
         this.favorites = JSON.parse(localStorage.getItem('gameFavorites')) || [];
         this.recent = JSON.parse(localStorage.getItem('gameRecent')) || [];
         this.currentView = 'grid';
         this.currentSection = 'games';
+        this.categories = [];
+        this.carouselIndex = 0;
+        this.carouselInterval = null;
+        this.carouselSlides = [];
 
         this.init();
     }
 
     async init() {
         await this.loadGamesFromJSON();
+        this.populateCategoryFilter();
         this.bindEvents();
-        this.renderGames();
-        this.updateFavorites();
-        this.updateRecent();
-        this.loadTheme();
+        this.renderAllSections();
+        // Add a class to the body to trigger entry animations
+        document.body.classList.add('loaded');
     }
 
     async loadGamesFromJSON() {
         try {
             const response = await fetch('./game_links.json');
-            const data = await response.json();
-            this.games = data.games || [];
-            
-            // Load any custom games from localStorage and merge
-            const customGames = JSON.parse(localStorage.getItem('customGames')) || [];
-            if (customGames.length > 0) {
-                // Add custom games with higher IDs to avoid conflicts
-                customGames.forEach(game => {
-                    game.id = game.id || Date.now() + Math.random();
-                });
-                this.games = [...this.games, ...customGames];
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
             }
+            const data = await response.json();
+            this.games = [...(data.games || []), ...this.customGames];
+            this.categories = data.categories || ['Action', 'Puzzle', 'Strategy', 'Arcade', 'Adventure', 'Simulation'];
         } catch (error) {
             console.error('Error loading games from JSON:', error);
             // Fallback to default games if JSON fails
             this.loadDefaultGames();
+            this.games = [...this.games, ...this.customGames];
+            this.categories = ['Action', 'Puzzle', 'Strategy', 'Arcade', 'Adventure', 'Simulation'];
         }
     }
 
@@ -105,6 +106,21 @@ class GamePortal {
         ];
     }
 
+    populateCategoryFilter() {
+        const select = document.getElementById('gameCategory');
+        if (!select) return;
+
+        // Clear existing options except the first one
+        select.innerHTML = '<option value="">Select category...</option>';
+
+        this.categories.forEach(category => {
+            const option = document.createElement('option');
+            option.value = category;
+            option.textContent = category;
+            select.appendChild(option);
+        });
+    }
+
     bindEvents() {
         // Navigation
         document.querySelectorAll('.nav-btn').forEach(btn => {
@@ -122,69 +138,76 @@ class GamePortal {
             });
         });
 
-        // Theme toggle
-        document.getElementById('themeToggle').addEventListener('click', () => {
-            this.toggleTheme();
-        });
-
         // Fullscreen
         document.getElementById('fullscreenBtn').addEventListener('click', () => {
             this.toggleFullscreen();
         });
 
-        // Modal controls
-        document.getElementById('closeModal').addEventListener('click', () => {
-            this.closeGameModal();
+        // Event Delegation for Game Cards
+        document.getElementById('gamesContainer').addEventListener('click', this.handleCardClick.bind(this));
+        document.getElementById('favoritesContainer').addEventListener('click', this.handleCardClick.bind(this));
+        document.getElementById('recentContainer').addEventListener('click', this.handleCardClick.bind(this));
+
+        // Carousel Events
+        const carouselContainer = document.getElementById('carousel-container');
+        if (carouselContainer) {
+            document.getElementById('carouselPrev').addEventListener('click', () => {
+                this.prevSlide();
+                this.startAutoSwipe(); // Reset timer on manual navigation
+            });
+            document.getElementById('carouselNext').addEventListener('click', () => {
+                this.nextSlide();
+                this.startAutoSwipe(); // Reset timer on manual navigation
+            });
+
+            // Use event delegation on the carousel to handle clicks on action buttons within slides
+            carouselContainer.addEventListener('click', this.handleCardClick.bind(this));
+
+            carouselContainer.addEventListener('mouseenter', () => this.stopAutoSwipe());
+            carouselContainer.addEventListener('mouseleave', () => this.startAutoSwipe());
+            document.getElementById('carouselDots').addEventListener('click', (e) => {
+                if (e.target.matches('.carousel-dot')) {
+                    this.showSlide(parseInt(e.target.dataset.index));
+                    this.startAutoSwipe(); // Reset timer on dot click
+                }
+            });
+        }
+
+        // Info Modal controls
+        document.getElementById('closeInfoModal').addEventListener('click', () => this.closeInfoModal());
+        document.getElementById('infoPlayBtn').addEventListener('click', (e) => {
+            this.playGame(parseInt(e.currentTarget.dataset.gameId));
+            this.closeInfoModal();
+        });
+        document.getElementById('infoFavoriteBtn').addEventListener('click', (e) => {
+            this.toggleFavorite(parseInt(e.currentTarget.dataset.gameId));
         });
 
-        document.getElementById('refreshBtn').addEventListener('click', () => {
+        // Game View controls
+        document.getElementById('backToHubBtn').addEventListener('click', () => this.exitGameMode());
+        document.getElementById('gameViewRefreshBtn').addEventListener('click', () => {
             this.refreshGame();
         });
-
-        document.getElementById('fullscreenGameBtn').addEventListener('click', () => {
+        document.getElementById('gameViewFullscreenBtn').addEventListener('click', () => {
             this.toggleGameFullscreen();
         });
-
-        document.getElementById('modalFavoriteBtn').addEventListener('click', () => {
+        document.getElementById('gameViewFavoriteBtn').addEventListener('click', () => {
             this.toggleGameFavorite();
         });
 
-        // Add game modal
-        document.getElementById('addGameBtn').addEventListener('click', () => {
-            this.openAddGameModal();
-        });
-
-        document.getElementById('closeAddModal').addEventListener('click', () => {
-            this.closeAddGameModal();
-        });
-
-        document.getElementById('cancelAdd').addEventListener('click', () => {
-            this.closeAddGameModal();
-        });
-
-        document.getElementById('addGameForm').addEventListener('submit', (e) => {
-            e.preventDefault();
-            this.addNewGame();
-        });
-
         // Close modals on background click
-        document.getElementById('gameModal').addEventListener('click', (e) => {
-            if (e.target.id === 'gameModal') {
-                this.closeGameModal();
-            }
-        });
-
-        document.getElementById('addGameModal').addEventListener('click', (e) => {
-            if (e.target.id === 'addGameModal') {
-                this.closeAddGameModal();
+        document.getElementById('gameInfoModal').addEventListener('click', (e) => {
+            if (e.target.id === 'gameInfoModal') {
+                this.closeInfoModal();
             }
         });
 
         // Keyboard shortcuts
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
-                this.closeGameModal();
+                this.exitGameMode();
                 this.closeAddGameModal();
+                this.closeInfoModal();
             }
         });
 
@@ -192,6 +215,29 @@ class GamePortal {
         document.getElementById('gameFrame').addEventListener('load', () => {
             this.hideGameLoader();
         });
+    }
+
+    handleCardClick(e) {
+        const target = e.target;
+        const card = target.closest('.game-card');
+        if (!card) return;
+
+        const gameId = parseInt(card.dataset.gameId);
+        const actionButton = target.closest('button[data-action]');
+
+        if (actionButton) {
+            e.stopPropagation(); // Prevent triggering multiple actions
+            const action = actionButton.dataset.action;
+            if (action === 'play' || action === 'quick-play') {
+                this.playGame(gameId);
+            } else if (action === 'favorite') {
+                this.toggleFavorite(gameId);
+            } else if (action === 'info') {
+                this.showGameInfo(gameId);
+            }
+        } else {
+            this.showGameInfo(gameId);
+        }
     }
 
     switchSection(section) {
@@ -228,148 +274,189 @@ class GamePortal {
         }
     }
 
-    renderGames() {
-        const container = document.getElementById('gamesContainer');
-        container.innerHTML = '';
+    renderAllSections() {
+        this.renderGames();
+        this.updateFavorites();
+        this.updateRecent();
+    }
 
-        this.games.forEach(game => {
+    renderGames() {
+        const carouselSlidesContainer = document.getElementById('carouselSlides');
+        const gamesContainer = document.getElementById('gamesContainer');
+
+        if (!carouselSlidesContainer || !gamesContainer) return;
+
+        if (this.games.length > 0) {
+            carouselSlidesContainer.innerHTML = '';
+            const carouselFragment = document.createDocumentFragment();
+            this.games.forEach(game => {
+                carouselFragment.appendChild(this.createCarouselSlide(game));
+            });
+            carouselSlidesContainer.appendChild(carouselFragment);
+            this.initCarousel();
+            this.renderGameList(gamesContainer, this.games);
+        } else {
+            document.getElementById('carousel-container').style.display = 'none';
+            this.renderGameList(gamesContainer, []); // Render empty state for the main grid
+        }
+    }
+
+    renderGameList(container, games) {
+        container.innerHTML = ''; // Clear previous content
+
+        if (!games || games.length === 0) {
+            const sectionId = container.parentElement.id;
+            let message = "No games found in this section.";
+            let icon = "fas fa-ghost";
+            if (sectionId === 'favorites-section') {
+                message = "No favorite games yet. Star some games to see them here!";
+                icon = "fas fa-heart-broken";
+            } else if (sectionId === 'recent-section') {
+                message = "No recent games. Start playing to see your history!";
+                icon = "fas fa-clock";
+            }
+            container.innerHTML = `<div class="empty-state"><i class="${icon}"></i><p>${message}</p></div>`;
+            return;
+        }
+
+        const fragment = document.createDocumentFragment();
+        games.forEach(game => {
             const gameCard = this.createGameCard(game);
-            container.appendChild(gameCard);
+            fragment.appendChild(gameCard);
         });
+        container.appendChild(fragment);
+    }
+
+    createCarouselSlide(game) {
+        const slide = document.createElement('div');
+        // Add 'game-card' class for the generic click handler to work
+        slide.className = 'carousel-slide game-card';
+        slide.dataset.gameId = game.id;
+
+        const backgroundStyle = game.thumbnail ? `style="background-image: url('${game.thumbnail}')"` : '';
+
+        slide.innerHTML = `
+            <div class="featured-background" ${backgroundStyle}></div>
+            <div class="featured-overlay">
+                <div class="featured-content">
+                    <h2 class="featured-title">${game.title}</h2>
+                    <p class="featured-description">${game.description}</p>
+                    <div class="featured-tags">
+                        ${(game.tags || []).slice(0, 4).map(tag => `<span class="tag">#${tag}</span>`).join('')}
+                    </div>
+                    <div class="featured-actions">
+                        <button class="btn btn-primary" data-action="play"><i class="fas fa-play"></i> Play Now</button>
+                        <button class="btn btn-secondary" data-action="info"><i class="fas fa-info-circle"></i> View Details</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        return slide;
     }
 
     createGameCard(game) {
         const card = document.createElement('div');
         card.className = 'game-card';
+        card.dataset.gameId = game.id;
         
-        // Create thumbnail HTML
         let thumbnailHTML;
         if (game.thumbnail) {
             thumbnailHTML = `<img src="${game.thumbnail}" alt="${game.title}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
                            <div class="game-icon-fallback" style="display: none;">
-                               <i class="${game.icon} game-icon"></i>
+                               <i class="${game.icon || 'fas fa-gamepad'} game-icon"></i>
                            </div>`;
         } else {
-            thumbnailHTML = `<i class="${game.icon} game-icon"></i>`;
+            thumbnailHTML = `<i class="${game.icon || 'fas fa-gamepad'} game-icon"></i>`;
         }
 
         card.innerHTML = `
             <div class="game-thumbnail">
                 ${thumbnailHTML}
-                <div class="game-overlay">
-                    <button class="play-btn" onclick="gamePortal.playGame(${game.id})">
-                        <i class="fas fa-play"></i> Play Now
-                    </button>
-                </div>
-                <div class="game-badge">
-                    <span class="category-badge">${game.category}</span>
-                </div>
             </div>
             <div class="game-info">
                 <h3 class="game-title">${game.title}</h3>
                 <div class="game-meta">
-                    <div class="author-info">
-                        <i class="fas fa-user-circle"></i>
-                        <span class="author">${game.author || 'Unknown'}</span>
-                    </div>
-                    <div class="rating">
-                        <i class="fas fa-star"></i>
-                        <span>${game.rating}</span>
-                    </div>
-                </div>
-                <p class="game-description">${game.description}</p>
-                <div class="game-tags">
-                    ${(game.tags || []).slice(0, 3).map(tag => 
-                        `<span class="tag">#${tag}</span>`
-                    ).join('')}
-                </div>
-                <div class="game-actions">
-                    <button class="favorite-btn ${this.favorites.includes(game.id) ? 'active' : ''}" 
-                            onclick="gamePortal.toggleFavorite(${game.id}, event)"
-                            title="${this.favorites.includes(game.id) ? 'Remove from favorites' : 'Add to favorites'}">
-                        <i class="fas fa-heart"></i>
-                    </button>
-                    <button class="quick-play-btn" onclick="gamePortal.playGame(${game.id})" 
-                            title="Quick play">
-                        <i class="fas fa-play"></i>
-                    </button>
-                    <button class="info-btn" onclick="gamePortal.showGameInfo(${game.id})"
-                            title="More info">
-                        <i class="fas fa-info-circle"></i>
-                    </button>
+                    <span class="category-badge">${game.category}</span>
                 </div>
             </div>
         `;
         return card;
     }
 
+    initCarousel() {
+        this.carouselSlides = document.querySelectorAll('#carouselSlides .carousel-slide');
+        const dotsContainer = document.getElementById('carouselDots');
+        dotsContainer.innerHTML = '';
+
+        if (this.carouselSlides.length <= 1) {
+            document.getElementById('carousel-container').classList.add('single-slide');
+            return;
+        };
+
+        this.carouselSlides.forEach((_, index) => {
+            const dot = document.createElement('button');
+            dot.className = 'carousel-dot';
+            dot.dataset.index = index;
+            dotsContainer.appendChild(dot);
+        });
+
+        this.showSlide(0);
+        this.startAutoSwipe();
+    }
+
+    showSlide(index) {
+        if (!this.carouselSlides.length) return;
+        this.carouselIndex = (index + this.carouselSlides.length) % this.carouselSlides.length;
+
+        const slidesContainer = document.getElementById('carouselSlides');
+        slidesContainer.style.transform = `translateX(-${this.carouselIndex * 100}%)`;
+
+        document.querySelectorAll('#carouselDots .carousel-dot').forEach((dot, i) => {
+            dot.classList.toggle('active', i === this.carouselIndex);
+        });
+    }
+
+    nextSlide() { this.showSlide(this.carouselIndex + 1); }
+    prevSlide() { this.showSlide(this.carouselIndex - 1); }
+
+    startAutoSwipe() {
+        this.stopAutoSwipe(); // Prevent multiple intervals
+        this.carouselInterval = setInterval(() => this.nextSlide(), 5000);
+    }
+    stopAutoSwipe() { clearInterval(this.carouselInterval); }
+
     showGameInfo(gameId) {
         const game = this.games.find(g => g.id === gameId);
         if (!game) return;
 
-        // Create or update info modal
-        let infoModal = document.getElementById('gameInfoModal');
-        if (!infoModal) {
-            infoModal = document.createElement('div');
-            infoModal.id = 'gameInfoModal';
-            infoModal.className = 'game-modal';
-            infoModal.innerHTML = `
-                <div class="modal-content info-modal">
-                    <div class="modal-header">
-                        <div class="game-info-header">
-                            <h3 id="infoGameTitle">${game.title}</h3>
-                            <p class="info-author">by <span id="infoAuthor">${game.author || 'Unknown'}</span></p>
-                        </div>
-                        <button class="close-btn" onclick="gamePortal.closeInfoModal()">
-                            <i class="fas fa-times"></i>
-                        </button>
-                    </div>
-                    <div class="info-content">
-                        <div class="info-thumbnail">
-                            ${game.thumbnail ? 
-                                `<img src="${game.thumbnail}" alt="${game.title}">` : 
-                                `<div class="icon-placeholder"><i class="${game.icon}"></i></div>`
-                            }
-                        </div>
-                        <div class="info-details">
-                            <div class="info-meta">
-                                <span class="category-badge">${game.category}</span>
-                                <div class="rating">
-                                    <i class="fas fa-star"></i>
-                                    <span>${game.rating}</span>
-                                </div>
-                            </div>
-                            <p class="info-description">${game.description}</p>
-                            <div class="info-tags">
-                                ${(game.tags || []).map(tag => `<span class="tag">#${tag}</span>`).join('')}
-                            </div>
-                            <div class="info-actions">
-                                <button class="btn btn-primary" onclick="gamePortal.playGame(${game.id}); gamePortal.closeInfoModal();">
-                                    <i class="fas fa-play"></i> Play Game
-                                </button>
-                                <button class="btn btn-secondary favorite-toggle" onclick="gamePortal.toggleFavorite(${game.id}); gamePortal.updateInfoFavoriteBtn(${game.id});">
-                                    <i class="fas fa-heart"></i> 
-                                    <span class="fav-text">${this.favorites.includes(game.id) ? 'Remove from Favorites' : 'Add to Favorites'}</span>
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            `;
-            document.body.appendChild(infoModal);
-            
-            // Add click outside to close
-            infoModal.addEventListener('click', (e) => {
-                if (e.target.id === 'gameInfoModal') {
-                    this.closeInfoModal();
-                }
-            });
+        const infoModal = document.getElementById('gameInfoModal');
+
+        // Populate modal content
+        infoModal.querySelector('#infoGameTitle').textContent = game.title;
+        infoModal.querySelector('#infoAuthor').textContent = game.author || 'Unknown';
+        infoModal.querySelector('#infoCategory').textContent = game.category;
+        infoModal.querySelector('#infoDescription').textContent = game.description;
+
+        const thumbnailImg = infoModal.querySelector('#infoThumbnailImage');
+        const thumbnailIconContainer = infoModal.querySelector('#infoThumbnailIcon');
+        if (game.thumbnail) {
+            thumbnailImg.src = game.thumbnail;
+            thumbnailImg.alt = game.title;
+            thumbnailImg.style.display = 'block';
+            thumbnailIconContainer.style.display = 'none';
         } else {
-            // Update existing modal content
-            infoModal.querySelector('#infoGameTitle').textContent = game.title;
-            infoModal.querySelector('#infoAuthor').textContent = game.author || 'Unknown';
-            // Update other content as needed
+            thumbnailImg.style.display = 'none';
+            thumbnailIconContainer.style.display = 'flex';
+            thumbnailIconContainer.querySelector('i').className = game.icon || 'fas fa-gamepad';
         }
+
+        const tagsContainer = infoModal.querySelector('#infoTags');
+        tagsContainer.innerHTML = (game.tags || []).map(tag => `<span class="tag">#${tag}</span>`).join('');
+
+        // Set up action buttons
+        document.getElementById('infoPlayBtn').dataset.gameId = game.id;
+        document.getElementById('infoFavoriteBtn').dataset.gameId = game.id;
+        this.updateInfoFavoriteBtn(game.id);
 
         infoModal.classList.add('active');
         document.body.style.overflow = 'hidden';
@@ -384,13 +471,16 @@ class GamePortal {
     }
 
     updateInfoFavoriteBtn(gameId) {
-        const favBtn = document.querySelector('.favorite-toggle');
-        const favText = favBtn?.querySelector('.fav-text');
-        if (favBtn && favText) {
-            const isFavorite = this.favorites.includes(gameId);
-            favText.textContent = isFavorite ? 'Remove from Favorites' : 'Add to Favorites';
-            favBtn.classList.toggle('active', isFavorite);
-        }
+        const favBtn = document.getElementById('infoFavoriteBtn');
+        // Ensure we are updating the button for the currently displayed game
+        if (!favBtn || parseInt(favBtn.dataset.gameId) !== gameId) return;
+
+        const favText = favBtn.querySelector('.fav-text');
+        const isFavorite = this.favorites.includes(gameId);
+
+        favText.textContent = isFavorite ? 'In Favorites' : 'Add to Favorites';
+        favBtn.classList.toggle('active', isFavorite);
+        favBtn.title = isFavorite ? 'Remove from Favorites' : 'Add to Favorites';
     }
 
     playGame(gameId) {
@@ -399,59 +489,52 @@ class GamePortal {
 
         // Add to recent games
         this.addToRecent(game);
-
-        // Show game modal
-        this.openGameModal(game);
+        this.enterGameMode(game);
     }
 
-    openGameModal(game) {
-        const modal = document.getElementById('gameModal');
+    enterGameMode(game) {
+        this.currentGame = game;
         const frame = document.getElementById('gameFrame');
+        const gameView = document.getElementById('gameView');
         const loader = document.getElementById('gameLoader');
 
-        // Update modal content
-        document.getElementById('modalGameTitle').textContent = game.title;
-        document.getElementById('modalCategory').textContent = game.category;
-        document.getElementById('modalRating').textContent = game.rating;
-        
-        // Update description with author info
-        const description = document.getElementById('modalDescription');
-        description.innerHTML = `
-            <div class="modal-game-author">
-                <i class="fas fa-user-circle"></i>
-                <span>Created by: <strong>${game.author || 'Unknown Developer'}</strong></span>
-            </div>
-            <p>${game.description}</p>
-            ${game.tags ? `
-                <div class="modal-tags">
-                    ${game.tags.map(tag => `<span class="tag">#${tag}</span>`).join('')}
-                </div>
-            ` : ''}
-        `;
+        // Update game view header
+        document.getElementById('gameViewTitle').textContent = game.title;
+        document.getElementById('gameViewAuthor').textContent = `by ${game.author || 'Unknown'}`;
 
-        // Update favorite button
-        const favBtn = document.getElementById('modalFavoriteBtn');
-        const heartIcon = favBtn.querySelector('i');
-        if (this.favorites.includes(game.id)) {
-            favBtn.classList.add('active');
-            heartIcon.className = 'fas fa-heart';
-        } else {
-            favBtn.classList.remove('active');
-            heartIcon.className = 'far fa-heart';
-        }
+        // Update favorite button in game view
+        this.updateGameViewFavoriteButton();
 
-        // Store current game
-        this.currentGame = game;
-
-        // Show modal first
-        modal.classList.add('active');
-        document.body.style.overflow = 'hidden';
+        // Add class to body to switch views
+        document.body.classList.add('game-mode-active');
+        document.body.style.overflow = 'hidden'; // Prevent scrolling of underlying content
 
         // Performance optimization: preload and optimize iframe
         this.optimizeGameFrame(frame, game.url);
         
         // Show loader
         loader.style.display = 'block';
+
+        // Automatically trigger fullscreen for the game frame as requested.
+        this.toggleGameFullscreen();
+    }
+
+    exitGameMode() {
+        // If we are in fullscreen, exiting it will be the primary action.
+        // The 'fullscreenchange' event will not trigger a second exit.
+        if (document.fullscreenElement) {
+            document.exitFullscreen();
+        }
+
+        if (!document.body.classList.contains('game-mode-active')) return;
+
+        document.body.classList.remove('game-mode-active');
+        document.body.style.overflow = 'auto';
+
+        const frame = document.getElementById('gameFrame');
+        // Clear frame to stop game execution and free up resources
+        frame.src = 'about:blank';
+        this.currentGame = null;
     }
 
     optimizeGameFrame(frame, gameUrl) {
@@ -471,8 +554,8 @@ class GamePortal {
         frame.style.transform = 'translateZ(0)'; // Force GPU layer
         frame.style.backfaceVisibility = 'hidden'; // Reduce repaints
         
-        // Optimize iframe for smooth gaming
-        frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-pointer-lock allow-top-navigation');
+        // Optimize iframe for smooth gaming (removed allow-top-navigation for security)
+        frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-pointer-lock');
         
         // Add error handling
         const handleError = () => {
@@ -554,24 +637,6 @@ class GamePortal {
         }
     }
 
-    closeGameModal() {
-        const modal = document.getElementById('gameModal');
-        const frame = document.getElementById('gameFrame');
-        
-        modal.classList.remove('active');
-        document.body.style.overflow = 'auto';
-        
-        // Clear frame after animation
-        setTimeout(() => {
-            frame.src = '';
-        }, 300);
-    }
-
-    hideGameLoader() {
-        const loader = document.getElementById('gameLoader');
-        loader.style.display = 'none';
-    }
-
     refreshGame() {
         if (!this.currentGame) return;
         
@@ -591,39 +656,32 @@ class GamePortal {
 
     toggleGameFullscreen() {
         const frame = document.getElementById('gameFrame');
-        
-        if (frame.requestFullscreen) {
-            frame.requestFullscreen();
-        } else if (frame.webkitRequestFullscreen) {
-            frame.webkitRequestFullscreen();
-        } else if (frame.msRequestFullscreen) {
-            frame.msRequestFullscreen();
+        if (!document.fullscreenElement) {
+            frame.requestFullscreen().catch(err => {
+                console.error(`Error attempting to enable full-screen mode: ${err.message} (${err.name})`);
+            });
+        } else {
+            document.exitFullscreen();
         }
     }
 
     toggleGameFavorite() {
         if (!this.currentGame) return;
-        
         this.toggleFavorite(this.currentGame.id);
-        
-        // Update modal favorite button
-        const favBtn = document.getElementById('modalFavoriteBtn');
-        const heartIcon = favBtn.querySelector('i');
-        
-        if (this.favorites.includes(this.currentGame.id)) {
-            favBtn.classList.add('active');
-            heartIcon.className = 'fas fa-heart';
-        } else {
-            favBtn.classList.remove('active');
-            heartIcon.className = 'far fa-heart';
-        }
     }
 
-    toggleFavorite(gameId, event) {
-        if (event) {
-            event.stopPropagation();
-        }
+    updateGameViewFavoriteButton() {
+        if (!this.currentGame) return;
+        const favBtn = document.getElementById('gameViewFavoriteBtn');
+        const heartIcon = favBtn.querySelector('i');
+        const isFavorite = this.favorites.includes(this.currentGame.id);
 
+        favBtn.classList.toggle('active', isFavorite);
+        heartIcon.className = isFavorite ? 'fas fa-heart' : 'far fa-heart';
+        favBtn.title = isFavorite ? 'Remove from Favorites' : 'Add to Favorites';
+    }
+
+    toggleFavorite(gameId) {
         const index = this.favorites.indexOf(gameId);
         if (index > -1) {
             this.favorites.splice(index, 1);
@@ -632,8 +690,11 @@ class GamePortal {
         }
 
         localStorage.setItem('gameFavorites', JSON.stringify(this.favorites));
-        this.updateFavorites();
-        this.renderGames(); // Re-render to update heart icons
+        this.renderAllSections(); // Re-render all sections to reflect the change
+        this.updateInfoFavoriteBtn(gameId); // Also update the info modal if it's open
+        if (this.currentGame && this.currentGame.id === gameId) {
+            this.updateGameViewFavoriteButton(); // Update game view if active
+        }
     }
 
     addToRecent(game) {
@@ -652,44 +713,14 @@ class GamePortal {
 
     updateFavorites() {
         const container = document.getElementById('favoritesContainer');
-        
-        if (this.favorites.length === 0) {
-            container.innerHTML = `
-                <div class="empty-state">
-                    <i class="fas fa-heart-broken"></i>
-                    <p>No favorite games yet. Star some games to see them here!</p>
-                </div>
-            `;
-            return;
-        }
-
         const favoriteGames = this.games.filter(game => this.favorites.includes(game.id));
-        container.innerHTML = '';
-
-        favoriteGames.forEach(game => {
-            const gameCard = this.createGameCard(game);
-            container.appendChild(gameCard);
-        });
+        this.renderGameList(container, favoriteGames);
     }
 
     updateRecent() {
         const container = document.getElementById('recentContainer');
-        
-        if (this.recent.length === 0) {
-            container.innerHTML = `
-                <div class="empty-state">
-                    <i class="fas fa-clock"></i>
-                    <p>No recent games. Start playing to see your history!</p>
-                </div>
-            `;
-            return;
-        }
-
-        container.innerHTML = '';
-        this.recent.forEach(game => {
-            const gameCard = this.createGameCard(game);
-            container.appendChild(gameCard);
-        });
+        // The 'recent' array already contains the full game objects
+        this.renderGameList(container, this.recent);
     }
 
     openAddGameModal() {
@@ -713,20 +744,23 @@ class GamePortal {
         
         const newGame = {
             id: Date.now(), // Simple ID generation
-            title: formData.get('gameTitle') || document.getElementById('gameTitle').value,
-            url: formData.get('gameUrl') || document.getElementById('gameUrl').value,
-            category: formData.get('gameCategory') || document.getElementById('gameCategory').value,
-            description: formData.get('gameDescription') || document.getElementById('gameDescription').value,
-            rating: 0, // New games start with 0 rating
-            thumbnail: formData.get('gameImage') || document.getElementById('gameImage').value,
-            icon: this.getCategoryIcon(document.getElementById('gameCategory').value)
+            title: formData.get('gameTitle'),
+            url: formData.get('gameUrl'),
+            category: formData.get('gameCategory'),
+            description: formData.get('gameDescription'),
+            rating: "N/A", // New games start with no rating
+            thumbnail: formData.get('gameImage') || null,
+            author: 'Community',
+            tags: ['custom'],
+            icon: this.getCategoryIcon(formData.get('gameCategory'))
         };
 
-        // Add to games array
+        // Add to live games array
         this.games.unshift(newGame);
         
-        // Save to localStorage
-        localStorage.setItem('customGames', JSON.stringify(this.games));
+        // Add to custom games list and save to localStorage
+        this.customGames.unshift(newGame);
+        localStorage.setItem('customGames', JSON.stringify(this.customGames));
         
         // Re-render games
         this.renderGames();
@@ -734,7 +768,6 @@ class GamePortal {
         // Close modal
         this.closeAddGameModal();
         
-        // Show success message (you could implement a toast notification here)
         alert('Game added successfully!');
     }
 
@@ -750,39 +783,11 @@ class GamePortal {
         return icons[category] || 'fas fa-gamepad';
     }
 
-    toggleTheme() {
-        const currentTheme = document.documentElement.getAttribute('data-theme');
-        const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-        
-        document.documentElement.setAttribute('data-theme', newTheme);
-        localStorage.setItem('theme', newTheme);
-        
-        // Update theme icon
-        const icon = document.querySelector('#themeToggle i');
-        icon.className = newTheme === 'dark' ? 'fas fa-sun' : 'fas fa-moon';
-    }
-
-    loadTheme() {
-        const savedTheme = localStorage.getItem('theme') || 'light';
-        document.documentElement.setAttribute('data-theme', savedTheme);
-        
-        // Update theme icon
-        const icon = document.querySelector('#themeToggle i');
-        icon.className = savedTheme === 'dark' ? 'fas fa-sun' : 'fas fa-moon';
-    }
-
     toggleFullscreen() {
         if (!document.fullscreenElement) {
             document.documentElement.requestFullscreen();
         } else {
             document.exitFullscreen();
-        }
-    }
-
-    loadCustomGames() {
-        const customGames = JSON.parse(localStorage.getItem('customGames')) || [];
-        if (customGames.length > 0) {
-            this.games = customGames;
         }
     }
 }
